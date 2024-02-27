@@ -1,0 +1,1040 @@
+Option Explicit
+Declare Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, ByVal lpParameters As String, ByVal lpDirectory As String, ByVal nShowCmd As Long) As Long
+Dim lhwnd As Long
+
+Private oAdoRecSetHlp As Object 'Alarm Help data 
+Private oAdoCntHlp As Object
+Dim sPrj As String
+Dim sInitPrj As String
+Private cimOleObj As AMVOCXLib.IAmvOcx
+Dim sPCType As String
+Dim sCmsini As String
+Dim sProjDir As String
+Dim sProj As String
+Dim sDataSrc As String
+Dim oAdoCnt As Object
+Dim oAdoErr As Object
+Dim oAdoRecSet As Object
+Dim aCrns() As String
+Dim aHosts() As String
+Dim aType() As String
+Dim sSqlConnStr As String
+Dim bEnb As Boolean
+Dim sHost As String
+Dim sHostSvr As String
+
+Function ChkDiffDrv(ByRef sPath As String,ByVal iAttrib As Integer) As Boolean
+	On Error Resume Next
+	Dim iCnt As Integer
+	Dim sTmp As String
+	sTmp = ""
+	sTmp = Dir$(sPath,iAttrib) 
+	If sTmp <> "." And sTmp <> "" Then 
+		ChkDiffDrv = True 
+		Exit Function
+	End If
+	If InStr(1,sPath, "\\", 0) <> 0 Then 
+		ChkDiffDrv = False
+		Exit Function
+	End If
+	iCnt = InStr(1,sPath, "D:\", 0)
+	If iCnt > 0 Then
+		sPath = "C" & Mid$(sPath, 2)
+		If Dir$(sPath,iAttrib) = "" Then ChkDiffDrv = False Else ChkDiffDrv = True
+	Else
+		sPath = "D" & Mid$(sPath, 2)
+		If Dir$(sPath,iAttrib) = "" Then ChkDiffDrv = False Else ChkDiffDrv = True
+	End If
+	Exit Function
+Exitfunc:
+	ChkDiffDrv = False
+End Function
+Function ChkPrgmDir(ByRef sExe As String) As Boolean
+	Dim x As Integer
+	Dim sTmp As String
+	If FileExists(sExe) Then
+		ChkPrgmDir = True
+		Exit Function
+	End If
+	x = InStr(1,sExe,"Program Files (x86)",1)
+	If x = 0 Then 
+		x = InStr(1,sExe,"Program Files",1)
+		sExe = Mid$(sExe,1,x-1) & "Program Files (x86)" &  Mid$(sExe,x+13)
+	Else
+		sExe = Mid$(sExe,1,x-1) & "Program Files" &  Mid$(sExe,x+19)
+	End If
+	If FileExists(sExe) Then
+		ChkPrgmDir = True
+	Else
+		ChkPrgmDir = False
+	End If
+End Function
+
+Sub OpenPlc(Optional sTmp As Variant)
+	Dim sStartIn As String
+	Dim sExe As String
+	Dim sArg As String
+	Dim id As Long
+	Dim evObj As GefObject
+	Set evObj = CimGetEventContext.TriggerObject
+
+	Dim sApp As String
+	sExe = Trim(evObj.GetVariable("Btn_Exe"))
+	sArg = Trim(evObj.GetVariable("Btn_Arg"))
+	sApp = Trim(evObj.GetVariable("Btn_App"))
+	If sTmp <> "" Then sArg = sTmp 
+	If ChkDiffDrv(sExe,0) = False Then
+		Msgbox "Could not find the application " & sExe & ".  Exiting...",ebCritical, "Open Plc"
+ 		Exit Sub
+	End If
+	'Different in Rcms alarm screen than lcms
+		sHostSvr = Environ("ComputerName")'CimGetScreen.Object.Objects("Toolbar").GetVariable("PCNameLocal").Value
+    		sHost = CimGetScreen.Object.Objects("Toolbar").GetVariable("PCName").Value
+		If sArg = "" And (sHostSvr <> sHost) Then
+			sArg = "," & sHost
+		End If
+		sStartIn = Item$(sExe,1,ItemCount(sExe, "\")-1,"\")
+		id = ShellExecute (lhwnd, "", sExe, sArg, sStartIn, 1)
+End Sub
+
+Sub OpenInPlc()
+	Dim sResID As String
+	Dim sAlmClass As String
+	Dim sSearchName As String
+	Dim lhwnd As Long
+	Dim sPath As String
+	Dim sHost As String
+	Dim sArg As String
+	Dim oCimObj As Object
+	Set oCimObj = CimGetScreen.Object.Objects("AlarmHelp")
+
+	sSearchName = oCimObj.Objects("AlmID").Objects("Text").TextFormat.Text
+	sResID = oCimObj.Objects("ResID").Objects("Text").TextFormat.Text
+	sAlmClass = oCimObj.Objects("AlmClass").Objects("Text").TextFormat.Text
+	If Left(sResID,1) = "$" Or Left(sAlmClass,1) = "$" Or sSearchName = "-" Then
+		Msgbox "The selected fault is not a PLC generated fault or a fault has not been selected." , ebCritical
+		Exit Sub
+	Else
+		sHostSvr = Environ("ComputerName")'CimGetScreen.Object.Objects("Toolbar").GetVariable("PCNameLocal").Value
+		'The following is taken out for rcms alarm screens
+    		sHost = CimGetScreen.Object.Objects("Toolbar").GetVariable("PCName").Value
+		If sHost = "" Then
+			Dim cboCrnSel As Object
+ 			Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+ 			sHost = aHosts(cboCrnSel.ListIndex)
+   		End If
+		If sHostSvr <> sHost Then
+			'sArg = varSignal, Hostname, plc project path,plc target, settings file
+			sArg = sSearchName & "," & sHost
+		Else
+			sArg = sSearchName
+		End If
+		Call OpenPlc(sArg)
+		'lhwnd = ShellExecute (lhwnd, "", sPath, sArg, "", 1)
+	End If
+End Sub
+
+Function PingDevice(sDevice As String)
+	Dim x As Integer
+	Dim objShell As Object
+	Dim bRet As Boolean
+	Set objShell = CreateObject("Wscript.Shell")
+	On Error Resume Next
+	x = 0
+	Dim strCmd
+	strCmd = "ping -n 1 " & sDevice
+	For x = 0 To 3
+		bRet = Not CBool(objShell.Run (strCmd,0,1))
+		If (bRet = True) Then
+			PingDevice = True
+			Exit For
+		Else
+			Sleep(500)
+			PingDevice = False
+		End If
+		x = x + 1
+	Next
+	Set objShell = Nothing
+End Function
+
+Sub InitSqlStr(ByRef sInitVar)
+   	Dim sTmp As String
+	sSqlConnStr = ReadIni$("Connection Strings", "DbConnectStr", sCmsini)
+	If sSqlConnStr = "" Then
+		sTmp = "Cannot find data source connection string in the cms.ini file." & Chr(13)
+		MsgBox sTmp, ebCritical, "Open Database Connection"
+		Exit Sub
+	End If
+	sTmp = UCase(CimGetScreen.Object.Objects("AlarmWindow").GetVariable("InitDataSrc").value)
+		Dim iTmp As Integer
+		Dim iTmp2 As Integer
+		Dim iSel As Integer
+		iTmp = InStr(1,sSqlConnStr,"Data Source")
+		iTmp = InStr(iTmp,sSqlConnStr,"=") + 1
+		iTmp2 = InStr(iTmp,sSqlConnStr,"\")
+		If iTmp2 = 0 Then iTmp2 = InStr(iTmp,sSqlConnStr,";")
+		sDataSrc = Mid(	sSqlConnStr, iTmp, iTmp2 - iTmp)
+
+	If sTmp <> "" Then
+		 
+		sInitVar = sTmp
+		If sInitVar <> "" Then
+			sSqlConnStr = Mid(sSqlConnStr,1,iTmp - 1) & sInitVar & Mid(sSqlConnStr,iTmp2)
+		End If
+	Else
+		sInitVar = sDataSrc
+	End If
+End Sub
+
+Function OpenSqlConn(bInit As Boolean) As Boolean
+	Dim sTmp As String
+	Dim sInitVar As String
+	Dim cboCrnSel As Object
+	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+
+	If bInit = True Then
+		'Create ADO objects 
+		Set oAdoCntHlp = CreateObject("ADODB.Connection")  
+		Set oAdoRecSetHlp = CreateObject("ADODB.RecordSet")
+   		Set oAdoErr = CreateObject("ADODB.Error")
+		
+		Call InitSqlStr(sInitVar)
+		oAdoCntHlp.ConnectionString = sSqlConnStr
+    		oAdoCntHlp.CursorLocation = 3
+		On Error GoTo ErrorHandler
+		If PingDevice(sInitVar) = True Then
+			OpenSqlConn = True
+		Else
+			OpenSqlConn = False
+		End If
+		oAdoCntHlp.Open
+
+	Else
+
+		Dim iId As Integer
+		sTmp = ""
+		'On Error GoTo ErrorHandler
+		'On Error Resume Next
+		cboCrnSel.Text = sProj
+		iId = cboCrnSel.ListIndex
+		If iId = -1 Then
+			sTmp = sDataSrc
+		Else
+			sTmp = aHosts(iId)
+			If sTmp = "" Then sTmp = sDataSrc 
+		End If
+		'On Error GoTo 0
+		
+		Dim iTmp As Integer
+		Dim iTmp2 As Integer
+		iTmp = InStr(1,sSqlConnStr,"Data Source")
+		iTmp = InStr(iTmp,sSqlConnStr,"=") + 1
+		iTmp2 = InStr(iTmp,sSqlConnStr,"\")
+		If iTmp2 = 0 Then iTmp2 = InStr(iTmp,sSqlConnStr,";")
+		sDataSrc = Mid(	sSqlConnStr, iTmp, iTmp2 - iTmp)
+		If sTmp <> "" Then
+			sSqlConnStr = Mid(sSqlConnStr,1,iTmp - 1) & sTmp & Mid(sSqlConnStr,iTmp2)
+		End If
+		On Error GoTo ErrorHandler
+		If oAdoRecSetHlp.State = 1 Then oAdoRecSetHlp.Close
+		If oAdoCntHlp.State = 1 Then oAdoCntHlp.Close
+		oAdoCntHlp.ConnectionString = sSqlConnStr
+    		'oAdoCntHlp.CursorLocation = 3
+		If UCASE(sTmp) = "NONE" Then
+			OpenSqlConn = False
+			Exit Function
+		End If
+ 		Dim bRet As Boolean
+		bRet = PingDevice(sTmp)
+		If bRet = False Then
+			OpenSqlConn = False
+		Else
+		  	oAdoCntHlp.Open
+			OpenSqlConn = True
+		End If
+	End If
+
+  ErrorHandler:
+	If oAdoCntHlp.Errors.Count <> 0 Then
+		sTmp = "Could not connect to the alarm database." & sTmp
+		Msgbox sTmp, ebcritical, "Alarm Help Database Connection"
+		'cboCrnSel.Text = "NONE"
+		OpenSqlConn = False
+	End If
+
+End Function
+
+Sub InitCrnList()
+	Dim sSQL As String
+	Dim sTmp As String		
+	'On Error GoTo ErrorHandler
+	sSQL = "SELECT CraneName, Id, CraneId, ComputerName, Type FROM SysCraneList WHERE Type = 'ASC' OR Type = 'QUAY'  OR Type = 'SVR' Order By Id ASC"
+	oAdoRecSetHlp.Open sSQL, oAdoCntHlp
+	Dim cboCrnSel As Object
+	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+	cboCrnSel.Clear
+	ReDim aHosts()
+	ReDim aType()
+	'ReDim aCrns()
+	If oAdoRecSetHlp.Recordcount > 0 Then
+		Dim i As Integer
+		'ReDim aCrns(oAdoRecSetHlp.Recordcount)
+		ReDim aHosts(oAdoRecSetHlp.Recordcount)
+		ReDim aType(oAdoRecSetHlp.Recordcount)
+		'aCrns(0) = "NONE"
+		aHosts(0) = "NONE"
+		aType(0) = "NONE"
+		cboCrnSel.AddItem "NONE", 0
+		oAdoRecSetHlp.MoveFirst
+		While Not oAdoRecSetHlp.EOF
+			i = oAdoRecSetHlp.Fields("Id").value
+			cboCrnSel.AddItem oAdoRecSetHlp.Fields("CraneName").value, i
+			'aCrns(i) = oAdoRecSetHlp.Fields("CraneName").value
+			aHosts(i) = oAdoRecSetHlp.Fields("ComputerName").value
+			aType(i) = oAdoRecSetHlp.Fields("Type").value
+			oAdoRecSetHlp.MoveNext
+		Wend
+	End If
+	cboCrnSel.Font.size = 12
+	cboCrnSel.Font.Bold = True
+	CimGetScreen.Refresh False
+	oAdoRecSetHlp.close
+
+End Sub
+'***************Alarms*************
+
+Sub ClearAlarm(bAllClrflag As Boolean)
+	Dim oCimTmpObj As Object
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+
+	Dim oAlmHlpObj As Object
+	Set oAlmHlpObj = oCimScrnObj.Objects("AlarmHelp")
+	Dim x As Integer
+	Dim sTmp As String
+
+	oAlmHlpObj.Objects("AlmHelp").OleObject.Text = ""
+	oAlmHlpObj.Objects("CustomNotes").OleObject.Text = ""
+	oAlmHlpObj.Objects("OperMsg").Objects("OperBox").OleObject.Text = ""
+	oAlmHlpObj.Objects("Dwg1").TextFormat.Text = "-"
+	oAlmHlpObj.Objects("Dwg2").TextFormat.Text = "-"
+	If bAllClrflag = True Then
+		oAlmHlpObj.Objects("DateTime").Objects("Text").TextFormat.Text =  "-"
+		oAlmHlpObj.Objects("AlmID").Objects("Text").TextFormat.Text =  "-"
+		oAlmHlpObj.Objects("ResID").Objects("Text").TextFormat.Text =  "-"
+		oAlmHlpObj.Objects("Severity").Objects("Text").TextFormat.Text =  "-"
+		oAlmHlpObj.Objects("AlmMsg").OleObject.Text = ""
+		oAlmHlpObj.Objects("AlmClass").Objects("Text").TextFormat.Text =  "-"
+	End If
+	CimGetScreen.CancelPointUpdates
+	For x = 1 To 2
+		Set oCimTmpObj = oAlmHlpObj.Objects("In_Out" & x)
+		sTmp = "{OnOffVar}"
+		oCimTmpObj.Objects("Label").TextFormat.Text = "-"
+		oCimTmpObj.Objects("OnOff").Objects("Bkgrd").Objects("Color").ExprListAnim.Item(0).Expression = sTmp & " EQ 1"
+		oCimTmpObj.Objects("OnOff").Objects("Bkgrd").Objects("Color").ExprListAnim.Item(1).Expression = sTmp & " EQ 0"
+		oCimTmpObj.Objects("OnOff").Objects("Text").ExprListAnim.Item(0).Expression = sTmp & " EQ 1"
+		oCimTmpObj.Objects("OnOff").Objects("Text").ExprListAnim.Item(1).Expression = sTmp & " EQ 0"
+	Next
+	CimGetScreen.RestartPointUpdates
+	CimGetScreen.Refresh False
+End Sub
+
+Sub GetAlmData
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	cimOleObj.SelectFirstAlarm
+	oCimScrnObj.GetVariable("AlarmId").Value = "-"
+	cimOleObj.DoCustom1 'See OnCustomButton where ButtonNumber = 1 AlarmHelp
+End Sub
+
+
+Sub OnNewAlarm(NewAlarms As Integer, AlarmCount As Long, AlarmDate As String)
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	If AlarmCount = oCimScrnObj.Objects("AlarmWindow").GetVariable("AlmCnt").Value And NewAlarms = False Then
+	Else
+		oCimScrnObj.Objects("AlarmWindow").GetVariable("AlmCnt").Value = AlarmCount
+		Call GetAlmData
+	End If
+	oCimScrnObj.Objects("AlarmWindow").GetVariable("AlmNew").Value = 1
+End Sub
+
+Sub AlarmHelpData()
+	Dim oCimTmpObj As Object
+	Dim sTmp As String
+	Dim sSql As String
+	Dim x As Integer
+	Dim sAddr As String
+	Dim iStrt As Integer
+	Dim iEnd As Integer
+	Dim bRes As Boolean
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	Dim oAlmHlpObj As Object
+	Set oAlmHlpObj = oCimScrnObj.Objects("AlarmHelp")
+	If oAdoCntHlp.State <> 1 Then bRes = OpenSqlConn(True)
+	If oAdoRecSetHlp.State = 1 Then oAdoRecSetHlp.Close
+	'Open recordset as defined by query string
+	sTmp = oAlmHlpObj.Objects("AlmID").Objects("Text").TextFormat.Text 'AlarmInfo.AlarmIdentifier 
+	sSql = "SELECT * FROM AlarmData WHERE PT_ID = '" & sTmp & "'"
+   	oAdoRecSetHlp.Open sSql, oAdoCntHlp
+	If oAdoRecSetHlp.RecordCount = 0 Then
+		Call ClearAlarm(False)
+		oAlmHlpObj.Objects("SaveBtn").ExprlistAnim.Item(0).Expression = "1"
+		CimGetScreen.Refresh False
+		Exit Sub
+	Else
+		oAlmHlpObj.Objects("SaveBtn").ExprlistAnim.Item(0).Expression = "0"
+	End If
+	'Check to see if it is a drive fault and if it is turn on the variable to show the drive fault button.
+	If Instr(sTmp,"DRV1FLT_A") <> 0 Or Instr(sTmp,"DRV2FLT_A") <> 0 Then
+		oAlmHlpObj.GetVariable("DrvHelp").Value = 1 
+	Else
+		oAlmHlpObj.GetVariable("DrvHelp").Value = 0
+	End If
+
+	If IsNull(oAdoRecSetHlp.Fields("ALM_HELP").value) Then sTmp = "" Else sTmp = oAdoRecSetHlp.Fields("ALM_HELP").value
+	oAlmHlpObj.Objects("AlmHelp").OleObject.Text = sTmp
+
+	If IsNull(oAdoRecSetHlp.Fields("CUSTOM_NOTES").value) Then sTmp = ""	Else sTmp = oAdoRecSetHlp.Fields("CUSTOM_NOTES").value
+	oAlmHlpObj.Objects("CustomNotes").OleObject.Text = sTmp
+
+	If IsNull(oAdoRecSetHlp.Fields("OPERATOR_MSG").value) Then sTmp = "" Else sTmp = oAdoRecSetHlp.Fields("OPERATOR_MSG").value 
+	oAlmHlpObj.Objects("OperMsg").Objects("OperBox").OleObject.Text = sTmp
+	CimGetScreen.CancelPointUpdates
+	x = 0 
+	For x = 1 To 2
+		Set oCimTmpObj = oAlmHlpObj.Objects("In_Out" & x)
+		If IsNull(oAdoRecSetHlp.Fields("IN_OUT" & x).value) Then sTmp = "" Else sTmp = oAdoRecSetHlp.Fields("IN_OUT" & x).value
+		If sTmp = "" Then
+			oCimTmpObj.VisibilityAnim.Expression = 0
+		Else
+			oCimTmpObj.VisibilityAnim.Expression = 1
+		 	sAddr = oAdoRecSetHlp.Fields("ADDR" & x).value
+			oCimTmpObj.Objects("Label").TextFormat.Text = sAddr & ": " & sTmp
+			If Left(sAddr,2) = "%I" Or Left(sAddr,2) = "%M" Or Left(sAddr,2) = "%Q" Or Left(sAddr,2) = "%T" Then
+				oCimTmpObj.Objects("OnOff").VisibilityAnim.Expression = 1
+				oCimTmpObj.Objects("OnOff").Objects("Bkgrd").Objects("Color").ExprListAnim.Item(0).Expression =  "\\" & sProj & "\" & sTmp & " EQ 1"
+				oCimTmpObj.Objects("OnOff").Objects("Bkgrd").Objects("Color").ExprListAnim.Item(1).Expression =  "\\" & sProj & "\" & sTmp & " EQ 0"
+				oCimTmpObj.Objects("OnOff").Objects("Text").ExprListAnim.Item(0).Expression = "\\" & sProj & "\" & sTmp & " EQ 1"
+				oCimTmpObj.Objects("OnOff").Objects("Text").ExprListAnim.Item(1).Expression = "\\" & sProj & "\" & sTmp & " EQ 0"
+			End If
+
+			
+		End If
+	Next
+	CimGetScreen.RestartPointUpdates
+	x = 0 
+	For x = 1 To 2
+		If IsNull(oAdoRecSetHlp.Fields("DWG" & x).value) Then sTmp = "" Else sTmp = oAdoRecSetHlp.Fields("DWG" & x).value
+		iStrt = 1
+		If sTmp = "" Then
+			oAlmHlpObj.Objects("Dwg" & x).VisibilityAnim.Expression = 0
+		Else
+			oAlmHlpObj.Objects("Dwg" & x).VisibilityAnim.Expression = 1
+			iEnd = Instr(iStrt,sTmp, "-")
+			If iEnd <> 0 Then
+				sTmp = Mid$(sTmp, iStrt, iEnd - iStrt)
+			End If
+
+		End If
+		oAlmHlpObj.Objects("Dwg" & x).TextFormat.Text = sTmp
+   Next
+	CimGetScreen.Refresh False
+	If oAdoRecSetHlp.State = 1 Then oAdoRecSetHlp.Close
+
+End Sub
+
+Sub OnExpressionHigh(exprValue As Variant)
+	Dim iAlmCnt As Integer
+	Dim sGroup As String
+	Dim sTmp As String
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	oCimScrnObj.Objects("AlarmWindow").GetVariable("AlmNew").Value = 0
+	If oCimScrnObj.GetVariable("AlarmId").Value = "-" Then
+		Call ClearAlarm(True)
+	End If
+	iAlmCnt = PointGet("$ALARM.TOTAL") 'oCimScrnObj.Objects("AlarmWindow").GetVariable("AlmCnt").Value
+	sGroup = oCimScrnObj.Objects("SortBtns").GetVariable("SortBy")
+	Select Case sGroup
+		Case """OPER"""
+			If oCimScrnObj.GetVariable("AlarmId").Value = "-" And iAlmCnt <> 0 Then
+				sTmp = "Maintenance Alarm is active. Call Maintenance"
+				oCimScrnObj.Objects("SortBtns").Objects("MaintTxt").Fill.ForeColor.RGB = 255 'red 
+				oCimScrnObj.Objects("SortBtns").Objects("OperTxt").Fill.ForeColor.RGB = 0
+			ElseIf oCimScrnObj.GetVariable("AlarmId").Value <> "-" And iAlmCnt <> 0 Then
+				oCimScrnObj.Objects("SortBtns").Objects("OperTxt").Fill.ForeColor.RGB = 255
+
+			End If
+		Case """MAINT"""
+			If oCimScrnObj.GetVariable("AlarmId").Value = "-" And iAlmCnt <> 0 Then
+				sTmp = "Level2 Alarm is active."
+				oCimScrnObj.Objects("SortBtns").Objects("Level2Txt").Fill.ForeColor.RGB = 255 'red
+			Else
+				If oCimScrnObj.Objects("SortBtns").Objects("OperTxt").Fill.ForeColor.RGB <> 255 Then
+					oCimScrnObj.Objects("SortBtns").Objects("MaintTxt").Fill.ForeColor.RGB = 255
+				End If
+			End If
+
+
+		Case """LEVEL2"""
+			sTmp = ""
+		Case Else
+			oCimScrnObj.Objects("SortBtns").Objects("MaintTxt").Fill.ForeColor.RGB = 0
+			oCimScrnObj.Objects("SortBtns").Objects("Level2Txt").Fill.ForeColor.RGB = 0 
+		End Select
+		oCimScrnObj.Objects("AlarmHelp").Objects("OperMsg").Objects("OperBox").OleObject.Text = sTmp
+	'End If
+	CimGetScreen.Refresh False
+End Sub
+
+Sub AlarmGroup(sName As String)
+	Dim oCimScrnObj As Object
+	
+	Set oCimScrnObj = CimGetScreen.Object
+
+	Dim sProjSel As String
+	Call ClearAlarm(True)
+	If sName = "SETUP" Then 
+		cimOleObj.DoSetup
+	Else
+		sProjSel = oCimScrnObj.GetVariable("CurPrj").value
+		Dim bEnb As Boolean
+		bEnb = oCimScrnObj.Objects("SortBtns").GetVariable("UserSortEnb").Value
+		If bEnb = True Then
+			oCimScrnObj.Objects("SortBtns").GetVariable("SortBy").Value = """" & sName & """"
+			On Error Resume Next
+			cimOleObj.SetProjectSetup sName, sProjSel
+		End If
+	End If
+	Call GetAlmData 
+
+End Sub
+
+Sub CustNotesUpdate
+	Dim bRes As Boolean
+	Dim sTmp As String
+	Dim sSql As String
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	Dim oAlmHlpObj As Object
+	Set oAlmHlpObj = oCimScrnObj.Objects("AlarmHelp")
+	Dim cimOleObj2 As Object
+	Dim iAffected As Long
+	Set cimOleObj2 = oAlmHlpObj.Objects("CustomNotes").OleObject
+	sTmp = oAlmHlpObj.Objects("AlmID").Objects("Text").TextFormat.Text
+
+	If oAdoCntHlp.State <> 1 Then bRes = OpenSqlConn(True)
+	sSQL = "Update AlarmData Set CUSTOM_NOTES ='" & cimOleObj2.Text & "' Where PT_ID = '" & sTmp &  "'"
+	oAdoCntHlp.Execute sSQL,iAffected
+	If iAffected = 0 Then 
+		MsgBox "No Alarm help was found for this alarm. Exiting....",ebCritical,"Alarm Help"
+	End If
+	Set cimOleObj2 = Nothing
+End Sub
+
+
+Declare Function WinHelpA Lib "USER32" (ByVal hwnd$, ByVal HelpFile$, ByVal wCommand%, ByVal dwData As Any)	
+
+Sub DrvHelp()	
+	Dim lngDevFltNum As Long
+	Dim lngId As Long
+	Dim sHelp_path As String
+	Dim hWinHlpApp As HWND
+	Dim sDirName As String
+	Dim sVerDir As String
+	Dim aTmp() As String
+	Dim sDevFltCode As String
+	Dim sDevType As String
+	Dim x As Integer
+	Dim sTmp As String
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	Dim oAlmHlpObj As Object
+	Set oAlmHlpObj = oCimScrnObj.Objects("AlarmHelp")
+	'sDevFltCode = "Boom Drive Trip Fault:208"
+	sDevFltCode = oAlmHlpObj.Objects("AlmMsg").OleObject.Text
+	x =  ItemCount(sDevFltCode, ":") 
+	sDevFltCode = Item$(sDevFltCode,x,x, ":")
+	lngDevFltNum = CLng(sDevFltCode)
+	lngDevFltNum = lngDevFltNum + 1000
+
+	sDevType = oAlmHlpObj.Objects("AlmHelp").OleObject.Text
+	'sDevType = "Drive:TM-10  The drive has tripped causing the motion to coast stop and set the brake."
+	'sDevType = Item$(sDevType, 1,1," ")
+	sDevType = Item$(sDevType, 2,2,":")
+	sDevType = Item$(sDevType, 1,1," ")
+	If sDevType = "TM-10" Or sDevType = "TM-P10" Or sDevType = "TM-DC" Then
+		sHelp_path = "C:\Program Files\GE Control System Solutions\Toshiba GE System Drive\" & sDevType
+		'Get latest version
+  		FileDirs aTmp, sHelp_path & "\A*"
+  		x = Ubound(aTmp)
+		sDirName = aTmp(x)
+	End If
+
+	'Determine which version directory is the latest if there is more than one version installed.
+	If sDirName = "" Then
+		MsgBox "Could not find the help files for the Drive " & sDevType & "at " & sHelp_path, ebcritical, "Drive Fault Help"
+		Exit Sub
+	Else
+		If sDevType = "TM-10" Or sDevType = "TM-P10" Then
+			sTmp = Dir(sHelp_path & "\" & sDirName & "\TM-10_TM-P10*_Faults.hlp")
+		   	sHelp_path = sHelp_path & "\" & sDirName & "\" & sTmp
+		ElseIf sDevType = "TM-DC" Then
+			sTmp = Dir(sHelp_path & "\" & sDirName & "\TM-T10_TM-T30*_Faults.hlp")
+		   	sHelp_path = sHelp_path & "\" & sDirName & "\TM-T10_TM-T30_TM-DC_Faults.hlp"
+		End If
+		If Not FileExists(sHelp_path) Then
+			MsgBox "Could not locate the help file " & sHelp_path, ebcritical, "Toshiba Drive Fault Help"
+			Exit Sub
+		End If
+		lngId = WinHelpA(,sHelp_path,1,lngDevFltNum)
+		Set hWinHlpApp = WinFind("Innovation Series " & sDevType & " Help")
+	End If
+End Sub	
+
+Function GetPrjPath() As String
+	'get project directory and cms.ini path
+	Dim iCnt As Integer
+	Dim sTmp As String
+	sTmp = CimGetScreen.Path
+	
+	iCnt = InStr(1,sTmp, "\Hmi\screens\", 0)-2
+	If iCnt <= 0 Then
+		sProjDir = "D:\Cms"
+		If ChkDiffDrv(sProjDir,16) = True Then 
+			sCmsini = sProjDir & "\HmiCfg\cms.ini"
+		  	If Not FileExists(sCmsini) Then
+		  		Msgbox "Could not find the cms.ini initialization file in the following locations: " & sCmsini & ". Exiting...",ebCritical, "Open Database Connection"
+		  	End If
+  		End If
+	Else
+		iCnt = ItemCount(sTmp,"\")
+		sProjDir = Item$(sTmp,1,iCnt-2,"\")
+		sCmsini = sProjDir & "\HmiCfg\cms.ini"
+	End If
+	GetPrjPath = sProjDir
+End Function
+
+
+Sub OpenDrawing(iDwgTyp As Integer,sDwgVwr As String,sDwgPath As String,sTyp As String,bRemEnb As Boolean,sArg As String)
+	'Dim sArg As String
+	Dim sStartin As String
+	Dim id As Long
+	Dim x As Integer
+	Dim sTmp As String
+	Dim iCnt As Integer
+   	Dim bRemHost As Boolean
+	Dim iAttrib As Integer
+	On Error GoTo ErrorMsg
+
+	If sArg = "-" Then	sArg = ""
+    If sTyp = UCase("QUAY") Then sTyp = "STS"
+   'Check if host is different than local host
+	If sHost <> "" And sHost <> sHostSvr Then bRemHost = True Else bRemHost = False
+
+   If sDwgVwr = "" Or sDwgPath = "" Or bRemEnb = True Then
+   		Dim sIni As String
+   		If bRemEnb = True And sHost <> "" Then sIni = "\\" & sHost & "\HmiCfg\cms.ini" Else sIni = sCmsini
+   		'Readini file
+   		If iDwgTyp  = 2 Then
+			sTmp = ReadIni$("Drawing Index", sTyp & " TMEIC Drawings (PDF)", sIni)
+			sDwgVwr = Item$(sTmp,1,1,"<")
+			sDwgPath = Item$(sTmp,2,2,"<")
+
+		Else
+			sTmp = ReadIni$("Drawing Index", sTyp & " TMEIC Drawings (DwgViewer)", sIni)
+			sDwgVwr = Item$(sTmp,1,1,"<")
+			sDwgPath = Item$(sTmp,2,2,"<")
+		End If
+		If sDwgVwr = "" Or sDwgPath = "" Then
+			Msgbox "Could not find the paths for the dwgviewer or the drawings. Exiting",ebCritical,"Open Dwg" 
+			Exit Sub 
+		End If
+   End If
+   'Check if there is a local drawing viewer if not check unc path
+   If ChkPrgmDir(sDwgVwr) = False Then
+		If bRemhost = True Then 'And bRemEnb = True Then
+			sTmp = "\\" & sHost & "\" & FileParse$(sDwgVwr,1) & "\" & Item$(sDwgVwr,2,ItemCount(sDwgVwr,"\"),"\")
+			If FileExists(sTmp) Then 
+				sDwgVwr = "\\" & sHost & "\" & FileParse$(sDwgVwr,1) & "\" & Item$(sDwgVwr,2,ItemCount(sDwgVwr,"\"),"\")
+			Else
+				sDwgVwr = "\\" & sHost & "\" & FileParse$(sDwgVwr,1) & "\" & Item$(sDwgVwr,2,ItemCount(sDwgVwr,"\"),"\")
+				If ChkPrgmDir(sDwgVwr) = False Then
+					Msgbox "Could not find the application " & sDwgVwr & ".  Exiting...",ebCritical, "Open Dwg"
+					Exit Sub
+				End If
+			End If
+		Else
+			Msgbox "Could not find the application " & sDwgVwr & ".  Exiting...",ebCritical, "Open App"
+			Exit Sub
+		End If
+	End If 
+
+   'Find Drawings directory
+   'Check if it is a directory or a file. File for pdf and directory for dwgviewer
+	If iDwgTyp = 2 Then iAttrib = 0 Else iAttrib = 16
+	If bRemHost = True Then
+		If bRemEnb = True Then
+			'get drawings from remote computer
+			If instr(1,sDwgPath,"\\") <> 0 Then iCnt = 4 Else iCnt = 2 
+			sDwgPath = "\\" & sHost & "\" & Item$(sDwgPath,iCnt,ItemCount(sDwgPath,"\"),"\")
+		Else
+   			'check if Typ directory is present and correct
+			iCnt = Instr(1,sDwgPath,"\" & sTyp & "\",1)
+			If iCnt = 0 Then
+				iCnt = Instr(1,sDwgPath,"Drawings\",1) + 8
+				If iCnt = 8 Then
+					Msgbox "Path does not contain the 'drawings' directory.  Exiting...",ebCritical, "Open Dwg"
+		   			Exit Sub
+				End If
+				sTmp = Mid$(sDwgPath,1,iCnt) & sTyp 
+				If Instr(iCnt+1,sDwgPath,"\",1) <> 0 Then iCnt = Instr(iCnt+1,sDwgPath,"\",1) 
+				sDwgPath = sTmp & Mid$(sDwgPath,iCnt)
+				If ChkDiffDrv(sDwgPath,iAttrib) <> True Then
+					If instr(1,sDwgPath,"\\") <> 0 Then iCnt = 4 Else iCnt = 2
+   					If bRemHost = True Then	sDwgPath = "\\" & sHost & "\" & Item$(sDwgPath,iCnt,ItemCount(sDwgPath,"\"),"\")
+				End If
+			Else
+				If ChkDiffDrv(sDwgPath,iAttrib) <> True Then
+					Msgbox "Could not find the drawings at " & sDwgPath & ".  Exiting...",ebCritical, "Open Dwg"
+		   			Exit Sub
+ 				End If
+			End If
+		End If
+	End If
+	'Check if it is a valid path
+	On Error Resume Next
+	If ChkDiffDrv(sDwgPath,iAttrib) <> True Then  
+		Msgbox "Could not find the drawings at " & sDwgPath & ".  Exiting...",ebCritical, "Open Dwg"
+		Exit Sub
+	End If
+	On Error GoTo 0
+
+
+   'sArg = dwg, host, extCfg, Path
+   If iDwgTyp = 1 Then
+		If Appfind("DrawingViewer") <> "" Then Appclose("DrawingViewer")
+		sArg = sArg & ",,," & sDwgPath
+	Else
+		If Appfind("Adobe Reader") <> "" Then Appclose("Adobe Reader")
+		sArg = "/A zoom=100&pagemode=none&navpanes=1=OpenActions&search=" & sArg & " " & sDwgPath
+		'sArg = "/A zoom=100&pagemode=none&navpanes=1 " & sDwgPath
+	End If
+
+	If sDwgVwr <> "" Then
+		sStartIn = Item$(sDwgVwr,1,ItemCount(sDwgVwr, "\")-1,"\")
+		id = ShellExecute (lhwnd, "", sDwgVwr, sArg, sStartIn, 3)
+	End If
+Exit Sub
+
+ErrorMsg:
+	sTmp =  "Could not open selected file. "  & Chr(13) & sDwgVwr & Chr(13)
+	Msgbox sTmp, ebCritical
+End Sub
+
+Sub OpenDwg()
+	Dim sArg As String
+	Dim sHost As String
+	Dim sTmp As String
+	Dim sDwgPath As String
+	Dim sDwgVwr As String
+	Dim bRemEnb As Boolean
+	Dim sTyp As String
+   	Dim iDwgTyp As Integer
+	On Error GoTo ErrorMsg
+
+	Dim cboCrnSel As Object
+ 	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+	'sHost = CimGetScreen.Object.Objects("Toolbar").GetVariable("PCName").Value
+	sHost = aHosts(cboCrnSel.ListIndex)
+	Dim sHostSvr As String
+	sHostSvr = Environ("ComputerName")
+	'sHostSvr = CimGetScreen.Object.Objects("Toolbar").GetVariable("PCNameLocal").Value
+
+	sArg = CimGetEventContext.TriggerObject.TextFormat.Text
+   	sTyp = aType(cboCrnSel.ListIndex)
+
+	'Get dwg screen variables. 
+   	bRemEnb = CimGetScreen.Object.Objects("AlarmWindow").GetVariable("DwgRemEnb").Value
+	iDwgTyp = CimGetScreen.Object.Objects("AlarmWindow").GetVariable("DwgVwTyp").Value
+	sDwgVwr = CimGetScreen.Object.Objects("AlarmWindow").GetVariable("DwgVwPath" & iDwgTyp).Value
+
+	Call OpenDrawing(iDwgTyp,sDwgVwr,sDwgPath,sTyp,bRemEnb,sArg)
+
+Exit Sub
+
+ErrorMsg:
+	sTmp =  "Could not open selected file. "  & Chr(13) & sDwgVwr & Chr(13)
+	Msgbox sTmp, ebCritical
+End Sub
+
+Sub SelDwgUtilPath
+	Dim sTmp As String
+	Dim iResp As Integer
+	sTmp = OpenFilename$("Select Drawing Viewer","All Files:*.exe")
+	If sTmp <> "" And FileExists(sTmp) Then 
+		CimGetScreen.Object.Objects("AlarmWindow").GetVariable("DwgVwPath").value = sTmp
+	Else
+		Exit Sub
+	End If
+	If CimGetScreen.Application.Name = "CimView.exe" Then 
+		iResp = Msgbox ("The change was made in Runtime mode(CimView). Would you like to make the change permanent?",ebYesNo,"Drawing Viewer Utility")
+		If iResp = 6 Then
+			Dim oEditApp As GefApplication
+			Dim oEditScreen As GefScreen
+    		Dim strScrName As String
+			'Check if screen is already open in CimEdit
+			If AppFind$(CimGetScreen.Name & " - CimEdit") <> "" Or AppFind$(CimGetScreen.Name & "* - CimEdit") <> "" Then
+				sTmp = "The screen '" & strScrName & "' is already open in edit mode. Please close the CimEdit screen and try again."
+				MsgBox sTmp, ebcritical, "Drawing Viewer Utility"
+				Exit Sub
+			End If      
+			Set oEditApp = CimEdit()
+     
+    		strScrName = CimGetScreen.Path & "\" & CimGetScreen.Name
+    		On Error GoTo EditErr 
+    		Set oEditScreen = oEditApp.Open(strScrName, , False) 
+			oEditScreen.Object.Objects("AlarmWindow").GetVariable("DwgVwPath").Value = sTmp
+			oEditScreen.Save
+			oEditApp.Quit
+			Set oEditApp = Nothing
+		End If
+	End If
+	Exit Sub
+EditErr:
+	oEditApp.Quit
+	Set oEditApp = Nothing
+End Sub
+
+Sub AlarmBtns
+	Dim sTmp As String
+	sTmp = CimGetEventContext.UserParameter
+	Call AlarmGroup(sTmp)
+End Sub
+
+Sub OnCustomButton(ButtonNumber As Long, ButtonString As String)
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	Dim sDate As String
+	Dim sTime As String
+	'%ID,%CLASS,%RESOURCE,%SEVERITY,%DATE,%TIME,%MESSAGE,%PROJECT
+	 If ButtonNumber = 1 Then
+		sDate =	Format$(Item$(ButtonString,5,5,","), "dd-mmm-yy")
+		sTime = Item$(ButtonString,6,6,",")
+	 	sTime = Left$(sTime,Len(sTime)-4)
+		sTime = Format$(sTime, "HH:nn:sss")
+		oCimScrnObj.Objects("AlarmHelp").Objects("DateTime").Objects("Text").TextFormat.Text = sDate & " " & sTime
+		oCimScrnObj.Objects("AlarmHelp").Objects("AlmID").Objects("Text").TextFormat.Text = Item$(ButtonString,1,1,",")
+		oCimScrnObj.Objects("AlarmHelp").Objects("ResID").Objects("Text").TextFormat.Text = Item$(ButtonString,3,3,",")
+		oCimScrnObj.Objects("AlarmHelp").Objects("Severity").Objects("Text").TextFormat.Text = Item$(ButtonString,4,4,",")
+		oCimScrnObj.Objects("AlarmHelp").Objects("AlmMsg").OleObject.Text = Item$(ButtonString,7,7,",")
+		oCimScrnObj.Objects("AlarmHelp").Objects("AlmClass").Objects("Text").TextFormat.Text = Item$(ButtonString,2,2,",")
+			oCimScrnObj.Objects("AlarmHelp").Objects("Project").Objects("Text").TextFormat.Text = Item$(ButtonString,8,8,",")
+		CimGetScreen.Refresh False
+	End If
+	oCimScrnObj.GetVariable("AlarmId").Value = Item$(ButtonString,1,1,",")
+	Call AlarmHelpData
+	CimGetScreen.Refresh False
+End Sub
+
+Sub CrnSelChg()
+	Dim sTmp As String
+	Dim bRes As Boolean
+	Dim cboCrnSel As Object
+	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+	Dim oAlmWin As Object
+	Set oAlmWin = CimGetScreen.Object.Objects("AlarmWindow").OLEObject
+	Dim sCurPrj As String  						
+	sCurPrj = CimGetScreen.Object.GetVariable("CurPrj").value
+
+	If UCASE(cboCrnSel.Text) = sCurPrj Then Exit Sub	   'UCASE(CimGetScreen.Object.Objects("AlarmWindow").GetVariable("ProjName").Value)
+	oAlmWin.RemoveProject sCurPrj
+	Dim iSel As Integer				
+	sProj = cboCrnSel.Text
+	iSel = cboCrnSel.ListIndex
+	oAlmWin.AddProject sProj, ""
+	CimGetScreen.Object.GetVariable("CurPrj").value = sProj
+	Dim bEnb As Boolean
+	bEnb = CimGetScreen.Object.Objects("SortBtns").GetVariable("UserSortEnb").Value
+	If bEnb = True Then If UCase(Left(sProj,4)) <> "YARD" Then Call AlarmGroup("<<UNFILTERED>>")
+
+	Msg.Open "Updating Data...Please wait.",0,0,0
+	bRes = OpenSqlConn(False)
+	Msg.close
+	If bRes = False Then GoTo ErrorHandler
+	Exit Sub
+ErrorHandler:
+   	' Enumerate Errors collection and display 
+   	' properties of each Error object.
+	If oAdoCntHlp.Errors.Count <> 0 Then
+		cboCrnSel.ListIndex = 0
+		ClearAlarm(False)
+	End If
+End Sub
+
+Sub OpenCurCrn()
+	Dim bRet As Boolean
+	Dim sCraneAct As String
+	Dim oScrn As GefScreen
+	Set oScrn = CimGetScreen.Parent.Item("ROS_Main.cim")
+	If oScrn Is Not Nothing Then
+		sCraneAct = oScrn.Object.GetVariable("CraneAct").value
+		'CimGetScreen.Object.GetVariable("BlkNum").value = oScrn.Object.GetVariable("BlkNum").value
+		sProj = sCraneAct'CimGetScreen.Object.Objects("cboCrane").OLEObject.List(iCraneAct)
+		'CimGetScreen.Object.Objects("cboCrane").OLEObject.Text = sCraneAct
+	Else  
+		sProj = ReadIni$("Crane Parameters", "CraneName", sCmsini)
+	End If																				   
+End Sub
+
+Sub OnScreenOpen()
+	Dim oCimScrnObj As Object
+	Set oCimScrnObj = CimGetScreen.Object
+	Dim bRes As Boolean
+ 	Dim sTmp As String
+	Dim iCnt As Integer
+
+	bEnb = oCimScrnObj.Objects("SortBtns").GetVariable("UserSortEnb").Value
+	oCimScrnObj.Objects("SortBtns").VisibilityAnim.Expression = bEnb
+   'Init paths
+	sProjDir = GetPrjPath
+	'Get Project Name and populate screen variable
+	
+	sProj = ReadIni$("Crane Parameters", "CraneName", sCmsini)
+
+	bRes = OpenSqlConn(True)
+	If bRes = False Then Exit Sub
+
+	'Initialize crane list
+	Call InitCrnList()
+
+	Dim cboCrnSel As Object
+	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+	On Error Resume Next
+	cboCrnSel.Text = sProj
+	On Error GoTo ErrorHandler
+	If cboCrnSel.ListIndex = -1 Then
+		cboCrnSel.AddItem sProj
+		cboCrnSel.Text = sProj
+		If aHosts(0) = "" Then ReDim aHosts(0 To 1) Else ReDim Preserve aHosts(0 To UBound(aHosts) + 1)	
+		'aHosts(UBound(aHosts)) = sProj
+		aHosts(UBound(aHosts)) = PointGet("$LOCAL.COMPUTER")
+	End If
+	'Call UpdAlmProj()
+
+	Exit Sub
+ErrorHandler:
+		sTmp = "Could not get data from the sql database.  " & Chr(13) & Chr(13)
+		Msgbox sTmp, ebcritical, "Alarm Database Connection"
+
+End Sub
+Sub OnScreenClose()
+	If Not oAdoRecSetHlp Is Nothing Then
+		If oAdoRecSetHlp.State = 1 Then oAdoRecSetHlp.Close
+		If oAdoCntHlp.State = 1 Then oAdoCntHlp.Close
+		Set oAdoRecSetHlp = Nothing
+	End If 
+	Set oAdoCntHlp = Nothing
+	CimGetScreen.Object.Objects("AlarmWindow").OLEObject.RemoveProject CimGetScreen.Object.GetVariable("CurPrj").value
+	CimGetScreen.Object.GetVariable("CurPrj").value = ""
+	CimGetScreen.Object.GetVariable("InitPrj").value = ""
+	Sleep 100
+End Sub
+
+Sub OnKeyUp(key As Integer)
+	Dim iState As Integer
+	iState = CimGetScreen.Object.Getvariable("ShowBtn").value
+	If iState = 1 Then
+		CimGetScreen.Object.Getvariable("ShowBtn").value = 0
+	Else
+		CimGetScreen.Object.Getvariable("ShowBtn").value = 1
+	End If
+End Sub
+Sub OpenConn()
+
+	'Open connection to db
+
+	Set oAdoCntHlp = CreateObject("ADODB.Connection")
+  	Set oAdoErr = CreateObject("ADODB.Error")
+	Set oAdoRecSetHlp = CreateObject("ADODB.RecordSet")
+		Dim iCnt As Integer
+	Dim sTmp As String
+	Dim sSqlConnStr As String
+	Dim sSql As String
+
+	sCmsini = CimGetScreen.Path
+	iCnt = InStr(1,sCmsini, "screens", 0)-2
+	sCmsini = Mid$(sCmsini,1,iCnt)
+	iCnt = ItemCount(sCmsini,"\")
+
+	sProjDir = Item$(sCmsini,1,iCnt - 1,"\")
+	sCmsini = sProjDir & "\HmiCfg\cms.ini"
+  	If Not FileExists(sCmsini) Then
+    	 'If ini not found check path in global ini windows\cimprojpath.ini to determine if it is an Rcms
+		  sTmp = ReadIni$("Global Parameters", "CfgFile", "CimProjPath.ini")
+		  If Not FileExists(sCmsini) Then
+		  	Msgbox "Could not find the cms.ini initialization file in the following locations: " & sCmsini & " or " & sTmp & ". Exiting...",ebCritical, "Open Database Connection"
+		  Else
+		  	sCmsini = sTmp
+		  End If
+  	End If
+
+	sSqlConnStr = ReadIni$("Connection Strings", "SqlDbConnectStr", sCmsini)
+	If sSqlConnStr = "" Then
+		sTmp = "Cannot find data source connection string in the cms.ini file." & Chr(13)
+		MsgBox sTmp, ebCritical, "Open Database Connection"
+		Exit Sub
+	End If
+
+	'Connect to database
+	'On Error Resume Next
+	oAdoCntHlp.ConnectionString = sSqlConnStr
+    oAdoCntHlp.CursorLocation = 3
+	oAdoCntHlp.Open
+
+	oAdoRecSetHlp.CursorType = 3 'static
+   	oAdoRecSetHlp.LockType = 1 'readonly
+	'oAdoRecSetHlp.Open sSQL, oAdoCntHlp
+ErrorHandler:
+	If oAdoCntHlp.Errors.Count <> 0 Then
+		sTmp = "Could not connect to the alarm help database."
+		Msgbox sTmp, ebcritical, "Alarm Help Database Connection"
+	End If
+End Sub
+
+Sub UpdAlmProj()
+	Dim cboCrnSel As Object
+	Set cboCrnSel = CimGetScreen.Object.Objects("cboCrane").OLEObject
+					  
+	Dim sCurPrj As String  						
+	Dim sTmp As String
+	sCurPrj = UCase(CimGetScreen.Object.GetVariable("CurPrj").value)
+
+	Dim bAsc As Boolean
+	bAsc = CimGetScreen.Object.GetVariable("AscPrj").value
+	sInitPrj = CimGetScreen.Object.GetVariable("InitPrj").value
+
+	Select Case UCase(sInitPrj)
+	Case "NONE"
+		 sInitPrj = "ASC01L"
+	Case ""																																		 
+		sInitPrj = UCase(CimGetScreen.BaseProject)
+		If bAsc = True Then sInitPrj = "ASC01L"
+	End Select
+
+	Select Case UCase(sCurPrj)
+	Case Is = ""
+		sProj = UCase(sInitPrj)
+		If sProj <> "" Then cboCrnSel.Text = sProj
+
+	Case Is <> UCase(sInitPrj)
+		sProj = sInitPrj
+		cboCrnSel.Text = sProj
+	Case Is = sInitPrj
+																																			 
+	End Select
+
+End Sub								
